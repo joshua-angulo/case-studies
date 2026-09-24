@@ -2,6 +2,8 @@
 
 **Role:** design and implementation, solo · **Period:** 2024 to present (called Luck AI until 2025) · **Code:** private
 
+In short: LuckAgents lets a small business put an AI assistant on its WhatsApp number. The assistant answers customers, books appointments and takes payments. I built the whole product myself, and this page explains how it's put together and what I learned.
+
 Businesses connect their own WhatsApp number, and AI agents answer their customers, book appointments and take payments. The code is a pnpm and Turborepo monorepo with 10 workspaces: a public Next.js portal, a React/Vite dashboard, an Express API with 42 route modules and an agent runtime that runs in containers, on top of PostgreSQL/Supabase, MongoDB and Redis.
 
 ```mermaid
@@ -28,7 +30,7 @@ If a multi-tenant app filters by `tenantId` in application code, every query is 
 
 I learned this from an audit, not an incident. Members in the `suspended` and `invited` states could still read data directly. Every endpoint was written correctly; the hole was in the policies. Since then, each permission change ships with an RLS regression test, because you can't see an isolation bug by reading the controller.
 
-> I published the pattern as a small, runnable repo: **[multi-tenant-rls](https://github.com/joshua-angulo/multi-tenant-rls)**, with 16 tests (most of them negative) and a mutation check that shows the tests catch a broken policy.
+> I published the pattern as a small, runnable repo: **[saas-data-isolation](https://github.com/joshua-angulo/saas-data-isolation)**, with 16 tests (most of them negative) and a mutation check that shows the tests catch a broken policy.
 
 ### Payments and messages happen once
 

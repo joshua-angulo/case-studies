@@ -1,6 +1,8 @@
-# Quantitative research and execution platform for electronic markets
+# A real-time data and ML platform
 
 **Role:** design and implementation, solo · **Period:** 2026 to present · **Code:** private
+
+In short: I built a system that records live crypto-market data on AWS, trains machine-learning models on it and runs those models in real time from a program written in Rust. The rest of this page explains how it's put together and why.
 
 The platform has two halves that have to agree with each other. One is an async Rust runtime that reads real-time feeds and makes decisions under latency limits. The other is a Python research stack that trains and validates the models the runtime executes. As of July 2026 the repository had 534 commits, 1,309 Rust test functions and 535 Python test files.
 
