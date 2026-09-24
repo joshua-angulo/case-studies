@@ -1,76 +1,80 @@
-# LuckAgents — plataforma SaaS multi-tenant de agentes de IA
+# LuckAgents: a multi-tenant SaaS for AI agents on WhatsApp
 
-**Rol:** diseño e implementación · **Periodo:** 2025 – presente · **Código:** privado
+**Role:** design and implementation, solo · **Period:** 2024 to present (called Luck AI until 2025) · **Code:** private
 
-Monorepo pnpm + Turborepo con 10 workspaces. Un portal público en Next.js, un dashboard de operación en React/Vite, una API en Express con 42 módulos de rutas y un runtime de agentes que corre en contenedores, sobre PostgreSQL/Supabase, MongoDB y Redis.
+Businesses connect their own WhatsApp number, and AI agents answer their customers, book appointments and take payments. The code is a pnpm and Turborepo monorepo with 10 workspaces: a public Next.js portal, a React/Vite dashboard, an Express API with 42 route modules and an agent runtime that runs in containers, on top of PostgreSQL/Supabase, MongoDB and Redis.
 
 ```mermaid
 flowchart LR
-  U["Cliente"] --> P["Portal · Next.js"]
+  U["Customer"] --> P["Portal · Next.js"]
   U --> D["Dashboard · React + Vite"]
   P --> API["API · Express"]
   D --> API
   WA["WhatsApp Business API"] --> API
   ST["Stripe"] --> API
-  API --> PG[("PostgreSQL / Supabase<br/>RLS por tenant")]
-  API --> MG[("MongoDB<br/>conversaciones")]
-  API --> RD[("Redis<br/>colas · locks · SSE")]
-  RD --> RT["Runtime de agentes<br/>en contenedores"]
-  RT --> LLM["Proveedores LLM"]
+  API --> PG[("PostgreSQL / Supabase<br/>per-tenant RLS · pgvector")]
+  API --> MG[("MongoDB<br/>conversations")]
+  API --> RD[("Redis<br/>queues · locks · SSE")]
+  RD --> RT["Containerized<br/>agent runtime"]
+  RT --> LLM["LLM providers"]
   API --> OBS["OpenTelemetry · Sentry · Prometheus"]
 ```
 
-## Decisiones que sostienen el sistema
+## Decisions behind the system
 
-### El aislamiento entre clientes vive en la base de datos, no en el controlador
+### Tenant isolation lives in the database
 
-Un SaaS multi-tenant que filtra por `tenantId` en el código tiene tantos puntos de fuga como consultas. Aquí el corte está en PostgreSQL: 31 políticas de Row Level Security — 23 directas y 8 mediadas por una función `current_tenant_id()` — que exigen membresía **activa** y preservan el rol de servicio para las tareas del sistema.
+If a multi-tenant app filters by `tenantId` in application code, every query is a chance to leak data. I put the boundary in PostgreSQL instead: 31 Row Level Security policies, 23 direct and 8 going through a `current_tenant_id()` function. They require an **active** membership and still let the service role run system tasks.
 
-La lección llegó por una auditoría, no por un incidente: las membresías en estado `suspended` e `invited` conservaban lectura directa. Ningún endpoint estaba mal escrito; la fuga estaba en la política. Desde entonces cada cambio de permisos entra con su prueba de regresión sobre RLS, porque un bug de aislamiento no se ve leyendo el controlador.
+I learned this from an audit, not an incident. Members in the `suspended` and `invited` states could still read data directly. Every endpoint was written correctly; the hole was in the policies. Since then, each permission change ships with an RLS regression test, because you can't see an isolation bug by reading the controller.
 
-> El patrón está publicado, aislado y ejecutable en **[multi-tenant-rls](https://github.com/joshua-angulo/multi-tenant-rls)**: 16 pruebas en su mayoría negativas, más una verificación por mutación que comprueba que la suite detecta su propio fallo.
+> I published the pattern as a small, runnable repo: **[multi-tenant-rls](https://github.com/joshua-angulo/multi-tenant-rls)**, with 16 tests (most of them negative) and a mutation check that shows the tests catch a broken policy.
 
-### Los efectos externos son idempotentes por contrato
+### Payments and messages happen once
 
-Stripe y WhatsApp Business pueden reenviar webhooks. Para reducir el riesgo de cobros o mensajes duplicados, cada efecto externo se ejecuta bajo clave de idempotencia, con locks distribuidos en Redis para las secciones que no pueden solaparse entre instancias. La regla operativa que se sigue de ahí: ante la duda, el sistema falla cerrado — prefiere no actuar a actuar dos veces.
+Stripe and WhatsApp Business can deliver the same webhook more than once. To avoid double charges and duplicate messages, every external effect runs under an idempotency key, and sections that can't overlap across instances take a distributed lock in Redis. Stripe webhooks are signature-checked and saved as a durable receipt before the API responds, and payments are reconciled against each provider. When the system isn't sure, it doesn't act: skipping an action is easier to fix than doing it twice.
 
-### SSE para el streaming de agentes
+### Agents that hand off
 
-La conversación con un agente es unidireccional del servidor al cliente. Server-Sent Events sobre HTTP se reconecta solo, atraviesa proxies corporativos sin negociación de protocolo y se instrumenta con las mismas trazas que el resto de la API. Un WebSocket habría añadido un canal bidireccional que nadie necesitaba y una superficie de fallo más que operar.
+Agents call tools to book appointments and charge customers, answer from each business's own documents through RAG on pgvector, and transcribe voice notes. When the model fails or a request is out of scope, the conversation goes to a person. Each tenant's AI budget is reserved before every paid model call, so one customer can't run up costs for everyone else.
 
-### Los secretos no pasan por el repositorio
+### SSE for streaming agent replies
 
-La fuente de verdad de configuración es un gestor de secretos externo; en git solo viven plantillas sin valores. El hook de pre-commit corre un escaneo de secretos **fail-closed**: si no puede verificar, bloquea. Es más barato rechazar un commit legítimo que rotar credenciales filtradas.
+An agent reply only flows from server to client. Server-Sent Events reconnect on their own, work through corporate proxies and carry the same traces as the rest of the API. A WebSocket would have added a two-way channel I didn't need and one more thing to keep running.
 
-### Observabilidad desde el diseño
+### Secrets stay out of the repository
 
-Trazas OpenTelemetry, errores en Sentry y métricas en Prometheus se instrumentaron junto con las funcionalidades, no después. El costo de añadirlas al final es reescribir los bordes del sistema justo cuando ya está en uso.
+Configuration lives in an external secrets manager, and git only holds templates without values. The pre-commit hook runs a secret scan that blocks the commit whenever it can't verify it. Rejecting a clean commit now and then costs far less than rotating leaked credentials.
 
-## Auditoría de modernización
+### Observability from the start
 
-En julio de 2026 el monorepo pasó por una auditoría integral. Estado inicial y resultado:
+I added OpenTelemetry traces, Sentry errors and Prometheus metrics together with each feature. Adding them at the end means reworking the edges of the system right when people start depending on it.
 
-| Frente | Antes | Después |
+## Modernization audit
+
+In July 2026 I audited the whole monorepo. Where it started and where it ended:
+
+| Area | Before | After |
 |---|---|---|
-| Cadena de suministro | 155 rutas vulnerables en dependencias de producción: 4 críticas, 73 altas, 66 moderadas, 12 bajas | 0 advisories conocidos |
-| Aislamiento multi-tenant | membresías `suspended`/`invited` con lectura directa en 31 políticas | migración forward: membresía activa exigida en las 31 |
-| Autenticación | flujo OAuth heredado conviviendo con SSO | OAuth heredado eliminado |
-| CI/CD | pipeline sin análisis estático de seguridad | GitHub Actions con CodeQL y revisión de dependencias |
+| Supply chain | 155 vulnerable production dependency paths: 4 critical, 73 high, 66 moderate, 12 low | 0 known advisories |
+| Tenant isolation | `suspended` and `invited` members could read directly under 31 policies | forward migration: all 31 require an active membership |
+| Authentication | a legacy OAuth flow next to SSO that trusted the identity the client sent | legacy OAuth removed |
+| CI/CD | no static security analysis | GitHub Actions with CodeQL and dependency review |
 
-Evidencia de validación local al cierre: **619** pruebas de API aprobadas (0 fallos, 1 omitida por diseño), **371/371** unitarias y de UI del dashboard, **76/76** end-to-end en Chromium y Firefox, y build global 10/10. En total 1,066 pruebas automatizadas.
+Local validation at the end: **619** API tests passing (0 failures, 1 skipped on purpose), **371/371** dashboard unit and UI tests, **76/76** end-to-end tests in Chromium and Firefox, and a 10/10 global build. 1,066 automated tests in total.
 
-## Lo que la auditoría concluyó, y por qué lo publico
+## The verdict, and why I'm publishing it
 
-**El dictamen fue NO-GO para producción.** El árbol estaba verde en local, con la suite completa pasando, y aun así no era desplegable: quedaban abiertos gates externos —conectividad del clúster gestionado, la API y Redis en el proveedor de infraestructura— que ninguna prueba local podía cubrir.
+**The audit concluded NO-GO for production.** Everything passed locally, and the system still wasn't ready to deploy. Some external checks were still open (connectivity to the managed database cluster, and the API and Redis on the hosting provider), and no local test could cover them.
 
-Publico esto porque separar "mi suite pasa" de "esto se puede operar" es la parte del oficio que más caro cuesta aprender. Un sistema que cobra dinero y habla con clientes reales no se promueve porque el CI esté verde; se promueve cuando los gates externos están verificados en el entorno real y existe una ruta de recuperación probada.
+I'm sharing this because the gap between "my tests pass" and "this can run in production" took me the longest to learn. A system that charges money and talks to real customers goes live once those external checks pass in the real environment and there's a recovery path that has actually been tested. A green CI run alone doesn't get it there.
 
-## Qué haría distinto
+## What I would do differently
 
-- Escribir las políticas de RLS **antes** que los endpoints, y con su prueba negativa: una consulta que debe fallar y falla.
-- Definir el contrato de entorno como código desde el primer día, no cuando ya hay tres aplicaciones con variables divergentes.
-- Fijar el criterio de "listo para producción" al principio del proyecto, con sus gates externos escritos; si se define al final, se define bajo presión.
+- Write the RLS policies before the endpoints, each one with a negative test: a query that should fail, and does.
+- Define the environment variables as a checked contract from day one, before three apps drift apart.
+- Write down what "ready for production" means at the start, including the external checks. Deciding it at the end means deciding it under pressure.
 
 ---
 
-**In English.** LuckAgents is a multi-tenant AI-agent SaaS: a pnpm/Turborepo monorepo with 10 workspaces, an Express API, a React/Vite dashboard, a Next.js portal and a containerized agent runtime on PostgreSQL/Supabase, MongoDB and Redis. Tenant isolation is enforced in the database through 31 RLS policies rather than in controllers; external side effects are idempotent by contract; secrets never reach the repository, guarded by a fail-closed pre-commit scan. A July 2026 modernization audit took 155 vulnerable production dependency paths to zero and left 1,066 automated tests passing — and still returned a **NO-GO for production**, because external infrastructure gates remained unverified. That distinction between "my suite is green" and "this can be operated" is the reason the case study exists.
+**En español.** LuckAgents es un SaaS multi-tenant de agentes de IA para WhatsApp: un monorepo pnpm/Turborepo con 10 workspaces, una API en Express, un dashboard en React/Vite, un portal en Next.js y un runtime de agentes en contenedores, sobre PostgreSQL/Supabase, MongoDB y Redis. El aislamiento entre clientes vive en la base de datos (31 políticas RLS), los pagos y mensajes externos son idempotentes, y los agentes usan herramientas y RAG sobre pgvector y pasan el caso a una persona cuando hace falta. En julio de 2026 una auditoría bajó de 155 a 0 las rutas vulnerables en dependencias y dejó 1,066 pruebas en verde. Aun así concluyó que no estaba listo para producción, porque faltaban verificaciones externas. Por eso escribí este caso.

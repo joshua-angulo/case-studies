@@ -1,56 +1,60 @@
-# Plataforma cuantitativa para mercados electrónicos
+# Quantitative research and execution platform for electronic markets
 
-**Rol:** diseño e implementación · **Periodo:** 2026 – presente · **Código:** privado
+**Role:** design and implementation, solo · **Period:** 2026 to present · **Code:** private
 
-Dos mitades que tienen que decir lo mismo: un runtime asíncrono en Rust que consume feeds en tiempo real y decide bajo restricciones de latencia, y una plataforma de investigación en Python que entrena y valida los modelos que ese runtime ejecuta. 534 commits, 1,309 funciones de prueba en Rust y 535 archivos de prueba en Python.
+The platform has two halves that have to agree with each other. One is an async Rust runtime that reads real-time feeds and makes decisions under latency limits. The other is a Python research stack that trains and validates the models the runtime executes. As of July 2026 the repository had 534 commits, 1,309 Rust test functions and 535 Python test files.
 
-Este documento describe **cómo está construido**, no qué opera ni con qué parámetros. No incluye venue, instrumento, umbrales ni resultado alguno.
+This note is about how the system is built. It leaves out the venue, the instruments, the thresholds and every result.
 
 ```mermaid
 flowchart LR
-  WS["Feeds WebSocket"] --> ING["Ingesta asíncrona · Tokio"]
-  ING --> BOOK["Reconstrucción de libro<br/>aritmética decimal exacta"]
-  BOOK --> POL["Política y control de riesgo<br/>fail-closed · DRY_RUN por defecto"]
-  POL --> EXEC["Ejecución"]
-  ING --> REC["Grabador → Parquet"]
-  REC --> RES["Investigación · Polars + DuckDB"]
-  RES --> MOD["Modelos tabulares<br/>XGBoost · CatBoost · LightGBM"]
-  MOD --> PAR["Prueba de paridad Python ↔ Rust"]
+  WS["WebSocket feeds"] --> ING["Async ingestion · Tokio"]
+  ING --> BOOK["Order-book rebuild<br/>exact decimal arithmetic"]
+  BOOK --> POL["Policy and risk control<br/>fail-closed · DRY_RUN by default"]
+  POL --> EXEC["Execution"]
+  ING --> REC["Recorder on AWS EC2 → Parquet → S3"]
+  REC --> RES["Research · Polars + DuckDB"]
+  RES --> MOD["Tabular models<br/>XGBoost · CatBoost · LightGBM"]
+  MOD --> PAR["Python ↔ Rust parity test"]
   PAR --> POL
 ```
 
-## Decisiones que sostienen el sistema
+## Decisions behind the system
 
-### El dinero no es `f64`
+### Money is never an `f64`
 
-Todas las rutas de orden y ejecución usan aritmética decimal exacta (`rust_decimal`). El punto flotante binario solo aparece donde el error de redondeo es irrelevante: límites de riesgo agregados. Es una regla aburrida hasta el día en que una diferencia de un ulp cruza un umbral de precio y la posición queda en un estado que ninguna prueba modeló.
+Every order and execution path uses exact decimal arithmetic (`rust_decimal`). Binary floating point only shows up where rounding can't matter, such as aggregate risk limits. It feels like an overly strict rule until a one-ulp difference crosses a price threshold and leaves a position in a state no test ever covered.
 
-### Python y Rust tienen que puntuar idéntico, y hay una prueba que lo exige
+### Python and Rust have to give the same score
 
-El modelo se entrena en Python y se ejecuta en Rust. Cualquier divergencia —un orden de features distinto, un redondeo, una diferencia de tipo— convierte la validación histórica en ficción. La paridad no se asume: es un test de contrato que compara las salidas de ambas implementaciones sobre vectores dorados y falla el pipeline si se separan. Ocho pruebas de contrato más el gate de calidad guardan esa frontera.
+Models are trained in Python and run in Rust. If the two disagree, whether from a different feature order, a rounding step or a type mismatch, the historical validation stops describing what runs live. So a contract test scores the same golden vectors in both languages and fails the pipeline if they differ. Eight contract tests and the quality gate cover that boundary.
 
-### Los datos de evaluación se gastan; no se reciclan
+### Evaluation data gets used once
 
-Antes de abrir cualquier fila de evaluación se preregistra el juez: qué días, qué hashes de modelo congelados y qué barras de aceptación. Un día cuyos resultados ya se miraron queda quemado a entrenamiento para siempre, y ese estado —sellado o quemado— se registra de forma explícita.
+Before I open any evaluation data, I write down the judge: which days, which frozen model hashes and which bars a model has to clear. Once I've looked at a day's results, that day moves to the training set for good, and the log records whether each day is still sealed or already used.
 
-Es la disciplina que separa un backtest de una ilusión. Los diagnósticos sobre días legítimos de entrenamiento son ilimitados, pero nunca son una afirmación de aceptación: esa solo sale de una ventana prospectiva preregistrada. La validación es walk-forward, con control de fuga temporal en cada frontera.
+Without this rule, a backtest ends up measuring how many times I peeked at the test data. Diagnostics on training days are unlimited, but a model is only accepted on a forward window I registered in advance. Validation is walk-forward, with purging at every train/test boundary so information doesn't leak across time.
 
-### Un kill-switch sin prueba negativa no es evidencia
+### Going live in stages
 
-Un control de integridad que nunca ha fallado no demuestra nada: puede estar apagado. Cada control lleva una prueba que **inyecta corrupción y verifica que el sistema falla**. Lo mismo vale para el estado por defecto del runtime: el modo simulado está activo salvo confirmación explícita, y el paso a operación real exige grabador, libro de órdenes y una confirmación aparte. Fail-closed en el default, no en el manual de operación.
+A new model reaches the engine in steps. First it runs in shadow mode, scoring live data without acting. Then it runs as a small canary. At both stages I compare drift and latency with what the backtest predicted, and if live behavior differs from research, I find out why before giving the model more room.
 
-### La evidencia está atada a un hash, o no existe
+### Every control has a test that makes it fail
 
-Cada veredicto del programa se registra en una bitácora append-only con su evidencia legible por máquina bajo control de versiones, ligada por SHA-256. Un resultado que solo vive en un directorio ignorado por git no cuenta como evidencia. La consecuencia práctica: cualquier afirmación del proyecto se puede reabrir en el commit exacto que la produjo.
+A check that has never failed tells you nothing, because it might be switched off. So each integrity check comes with a test that injects bad data and confirms the system stops. The runtime works the same way: it starts in simulation mode, and going live needs the recorder running, the order book in sync and a separate confirmation. The safe state is the default, so nobody has to remember to turn it on.
 
-### Atribuir antes de amputar
+### Every result points to a commit
 
-Cuando un segmento de datos se ve mal, la tentación es cortarlo. Aquí un segmento solo sale del entrenamiento después de una atribución basada en evidencia: descartar mecánicamente confusores de comisiones, API o fuente, pruebas de transferencia en ambas direcciones y dosis-respuesta. Nunca por un solo delta agregado — así es como se elimina justo la señal que incomoda.
+Each verdict goes into an append-only log, and its evidence is committed in machine-readable form and linked by SHA-256. A result that only exists in an ignored folder doesn't count. In practice this means I can reopen any claim in the project at the exact commit that produced it.
 
-## Por qué esto importa fuera de un mercado
+### Explain a bad segment before cutting it
 
-Cambia el dominio y las restricciones se mantienen: dinero que no admite redondeo, decisiones con trazabilidad auditable, reintentos que no pueden duplicar un efecto, controles que deben probarse fallando y una frontera nítida entre lo que se midió y lo que se supone. Es la misma ingeniería que exige un sistema transaccional regulado, con la ventaja de que aquí el error no se esconde: se paga.
+When part of the data looks bad, it's tempting to drop it. Here a segment only leaves the training set after I've ruled out fees, API behavior and the data source as causes, checked whether the effect transfers in both directions and looked for a dose-response pattern. One bad aggregate number isn't enough, because that's an easy way to delete the signal you didn't want to see.
+
+## Outside of markets
+
+The same constraints show up in any system that handles money or critical decisions: amounts that can't be rounded, decisions that need an audit trail, retries that must not repeat an effect, safety checks that have to be tested, and a clear line between what was measured and what was assumed. The difference here is that mistakes show up quickly, because they cost money.
 
 ---
 
-**In English.** A quantitative research and execution platform for electronic markets: an async Rust runtime (Tokio) consuming real-time WebSocket feeds, rebuilding order books with exact decimal arithmetic and deciding under latency constraints, paired with a Python research stack (Parquet, Polars, DuckDB, gradient-boosted tabular models). 534 commits, 1,309 Rust test functions, 535 Python test files. The engineering thesis: money never touches binary floating point on order paths; Python and Rust must score identically and a parity contract test enforces it; evaluation data is spent, not reused, with a preregistered judge and walk-forward validation; an integrity check without a negative test proving it fails on injected corruption is not evidence; and every verdict is hash-bound to committed evidence. Venue, instrument, thresholds and results are deliberately omitted.
+**En español.** Plataforma de investigación y ejecución cuantitativa para mercados electrónicos. Un runtime asíncrono en Rust (Tokio) lee feeds WebSocket en tiempo real, reconstruye libros de órdenes con aritmética decimal exacta y decide con límites de latencia. La investigación en Python (Parquet, Polars, DuckDB y modelos de gradient boosting) trabaja con datos grabados en AWS. Python y Rust tienen que dar el mismo puntaje, y una prueba de contrato lo verifica. Los datos de evaluación se usan una sola vez, con un juez registrado de antemano y validación walk-forward purgada. Los modelos pasan por shadow y canary antes de crecer. No incluyo el mercado, los instrumentos, los umbrales ni los resultados.

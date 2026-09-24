@@ -1,27 +1,22 @@
 # Case studies
 
-Notas de ingeniería sobre los dos sistemas que he construido. El código es privado —uno es producto propio en desarrollo, el otro contiene estrategia propia— así que aquí publico lo que sí se puede revisar sin exponerlo: la arquitectura, las decisiones y los errores que costaron algo.
+Write-ups of the two systems I've built. The code is private: one is my own product and the other contains a strategy I keep to myself. These notes cover what I can share, which is how each system is built, why I made the decisions I did, and what went wrong along the way.
 
-Cada documento responde tres preguntas: qué se construyó, qué decisiones lo sostienen y qué haría distinto.
-
-| Caso | Stack | Qué muestra |
+| Case | Stack | Covers |
 |---|---|---|
-| [LuckAgents — SaaS multi-tenant de agentes de IA](luckai-saas-multitenant.md) | TypeScript · Node/Express · React · Next.js · PostgreSQL/Supabase · MongoDB · Redis · Docker | Aislamiento entre clientes en la base de datos, idempotencia en efectos externos, y una auditoría que terminó en NO-GO para producción con la suite en verde |
-| [Plataforma cuantitativa para mercados electrónicos](plataforma-cuantitativa.md) | Rust (Tokio) · Python · Polars · DuckDB · Parquet · XGBoost/CatBoost/LightGBM | Aritmética decimal en rutas de dinero, paridad Python↔Rust como contrato, y controles de validación que se prueban fallando |
+| [Quantitative research and execution platform](plataforma-cuantitativa.md) | Python, Polars, DuckDB, Parquet, XGBoost, CatBoost, LightGBM, AWS (EC2, S3), Rust (Tokio) | Validation without leakage (walk-forward, purged, preregistered), Python and Rust scoring as a tested contract, shadow and canary rollout, controls tested by making them fail |
+| [LuckAgents, a multi-tenant SaaS for AI agents](luckai-saas-multitenant.md) | TypeScript, Node/Express, React, Next.js, PostgreSQL/Supabase, pgvector, MongoDB, Redis, Docker | Tenant isolation in the database, idempotent payments, agents with tools and RAG, and an audit that said NO-GO for production with every test passing |
 
-Sin cifras de negocio, sin resultados financieros, sin credenciales, sin datos de clientes. Donde una decisión dependía de información que no me corresponde publicar, está descrita por su forma y no por su contenido.
+I left out business figures, financial results, credentials and customer data. When a decision depended on something I can't publish, I describe the shape of the problem and leave the specifics out.
 
-## Código que acompaña estas notas
+## Runnable code
 
-Una de las decisiones del primer caso está publicada como implementación ejecutable, no solo descrita:
+The tenant-isolation pattern from LuckAgents is published as working code in [multi-tenant-rls](https://github.com/joshua-angulo/multi-tenant-rls): about 200 lines of SQL and TypeScript, 16 tests (most of them negative) and a mutation check showing the tests catch a broken policy. It takes about two minutes to run.
 
-**[multi-tenant-rls](https://github.com/joshua-angulo/multi-tenant-rls)** — el aislamiento entre clientes con Row Level Security, en ~200 líneas de SQL y TypeScript, con 16 pruebas en su mayoría negativas y una verificación por mutación que comprueba que la suite detecta su propio fallo. Se corre en dos minutos.
+If you'd like to go through the rest of the code or the architecture, I'm glad to do it in an interview.
 
-Puedo recorrer el resto del código y la arquitectura completa en una entrevista.
-
-**Joshua Angulo González** — Software Engineer · Culiacán, Sinaloa, México
-[linkedin.com/in/joshuaangulogonzalez](https://www.linkedin.com/in/joshuaangulogonzalez/) · [joshuaangulo10@gmail.com](mailto:joshuaangulo10@gmail.com)
+Joshua Angulo González · Culiacán, Mexico (UTC-7) · [LinkedIn](https://www.linkedin.com/in/joshuaangulogonzalez/) · joshuaangulo10@gmail.com
 
 ---
 
-**In English.** Engineering notes on the two systems I've built. The code is private — one is a product in development, the other holds proprietary strategy — so what's published here is what can be reviewed without exposing it: architecture, decisions, and the mistakes that cost something. No business figures, no financial results, no credentials, no customer data.
+**En español.** Notas sobre los dos sistemas que he construido. El código es privado (uno es producto propio y el otro contiene una estrategia que no publico), así que aquí comparto cómo está hecho cada uno, por qué tomé las decisiones que tomé y qué salió mal en el camino. No incluyo cifras de negocio, resultados financieros, credenciales ni datos de clientes.
